@@ -181,7 +181,8 @@ function useCola() {
   useEffect(() => {
     intentar();
     window.addEventListener('online', intentar);
-    const t = setInterval(intentar, 20000);
+    // reintentos escalonados: no salen todos los celulares en el mismo segundo
+    const t = setInterval(() => setTimeout(intentar, Math.random() * 10000), 20000);
     return () => { window.removeEventListener('online', intentar); clearInterval(t); };
   }, []);
   return { pendientes, enviando, intentar, refrescar: () => setPendientes(leerCola().length) };
@@ -278,11 +279,14 @@ function PanelApp() {
 
   const enviarMuestra = () => {
     const f = filas[idx];
+    // si esta muestra ya se había enviado, es una corrección: el servidor actualiza la fila existente
+    const corrige = respondidas(sesion.Sesion).has(f.Orden);
     const fila = {
       id: `${valuador}|${sesion.Sesion}|${f.Orden}`,
       // el vino y su repetición los completa el servidor (la app no los conoce: cata a ciegas)
       Sesion: sesion.Sesion, Valuador: valuador, Orden: f.Orden, CodigoProducto: f.CodigoProducto,
       timestamp: ahora(), ...valores,
+      ...(corrige ? { corrige: true } : {}),
     };
     encolar(fila); cola.refrescar(); cola.intentar();
     const nb = { ...buffer, [f.Orden]: { ...valores } };
