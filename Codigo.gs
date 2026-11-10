@@ -4,8 +4,9 @@
  * Hojas que usa (se crean solas):
  *   Config      -> ClaveAdmin y nombre del estudio
  *   Atributos   -> un atributo por fila (columna "Nombre")
- *   Sesiones    -> Sesion | Grupo | Rep | NMuestras | Vinos
- *   Diseno      -> Sesion | Grupo | Rep | Valuador | Orden | Muestra | NombreProducto | CodigoProducto
+ *   Sesiones    -> Sesion | NMuestras | Vinos
+ *   Diseno      -> Sesion | Valuador | Orden | NombreProducto | Rep | CodigoProducto
+ *                  (Rep = repetición de ese vino: 1ª, 2ª, 3ª vez que pasa por el panel)
  *   Respuestas  -> una fila por muestra evaluada (se actualiza si el panelista corrige)
  *
  * Todas las llamadas son POST con un JSON { accion: "...", ... }.
@@ -51,8 +52,8 @@ const ACCIONES = {
       atributos: b.atributos,
       sesiones: b.sesiones,
       panelistas: b.panelistas,
-      // [Sesion, Grupo, Rep, Valuador, Orden, Muestra, CodigoProducto]
-      diseno: b.diseno.map(r => [r[0], r[1], r[2], r[3], r[4], r[5], r[7]]),
+      // [Sesion, Valuador, Orden, CodigoProducto]
+      diseno: b.diseno.map(r => [r[0], r[1], r[2], r[5]]),
       progreso: respondidas_(),
     };
   },
@@ -65,8 +66,8 @@ const ACCIONES = {
 
   panelista: function (req) {
     const v = String(req.valuador || '').trim();
-    const diseno = base_().diseno.filter(r => r[3] === v).map(r => ({
-      Sesion: r[0], Grupo: r[1], Rep: r[2], Valuador: r[3], Orden: r[4], Muestra: r[5], CodigoProducto: r[7],
+    const diseno = base_().diseno.filter(r => r[1] === v).map(r => ({
+      Sesion: r[0], Valuador: r[1], Orden: r[2], CodigoProducto: r[5],
     }));
     const prog = respondidas_(), out = {};
     Object.keys(prog).forEach(k => { const p = k.split('|'); if (p[0] === v) out[p[1]] = prog[k]; });
@@ -76,18 +77,22 @@ const ACCIONES = {
   guardar: function (req) {
     const filas = Array.isArray(req.filas) ? req.filas : (req.fila ? [req.fila] : []);
     if (!filas.length) return { ok: true, guardadas: 0 };
-    // el nombre del vino lo completa el servidor desde el diseño (la app no lo conoce)
-    const nombres = {};
-    base_().diseno.forEach(r => { nombres[r[3] + '|' + r[0] + '|' + r[4]] = r[6]; });
-    filas.forEach(f => {
-      const n = nombres[f.Valuador + '|' + f.Sesion + '|' + Number(f.Orden)];
-      if (n && !f.NombreProducto) f.NombreProducto = n;
+    // el vino y su repetición los completa el servidor desde el diseño (la app no los conoce)
+    const info = {};
+    base_().diseno.forEach(r => { info[r[1] + '|' + r[0] + '|' + r[2]] = r; });
+    const completas = filas.map(f => {
+      const d = info[f.Valuador + '|' + f.Sesion + '|' + Number(f.Orden)];
+      const o = { id: f.id, Sesion: f.Sesion, Valuador: f.Valuador, Orden: f.Orden,
+        NombreProducto: d ? d[3] : (f.NombreProducto || ''), Rep: d ? d[4] : (f.Rep || ''),
+        CodigoProducto: f.CodigoProducto, timestamp: f.timestamp };
+      Object.keys(f).forEach(k => { if (!(k in o)) o[k] = f[k]; }); // atributos
+      return o;
     });
     const lock = LockService.getScriptLock();
     lock.waitLock(25000);
     try {
       const hoja = hoja_(HOJA.RES);
-      filas.forEach(f => upsert_(hoja, f));
+      completas.forEach(f => upsert_(hoja, f));
     } finally {
       lock.releaseLock();
     }
@@ -116,10 +121,10 @@ const ACCIONES = {
       }
       if (req.estudio) setConfig_('Estudio', String(req.estudio));
       escribir_(HOJA.ATR, ['Nombre'], (req.atributos || []).map(a => [a]));
-      escribir_(HOJA.SES, ['Sesion', 'Grupo', 'Rep', 'NMuestras', 'Vinos'],
-        (req.sesiones || []).map(s => [s.Sesion, s.Grupo, s.Rep, s.NMuestras, s.Vinos]));
-      escribir_(HOJA.DIS, ['Sesion', 'Grupo', 'Rep', 'Valuador', 'Orden', 'Muestra', 'NombreProducto', 'CodigoProducto'],
-        (req.diseno || []).map(d => [d.Sesion, d.Grupo, d.Rep, d.Valuador, d.Orden, d.Muestra, d.NombreProducto, d.CodigoProducto]));
+      escribir_(HOJA.SES, ['Sesion', 'NMuestras', 'Vinos'],
+        (req.sesiones || []).map(s => [s.Sesion, s.NMuestras, s.Vinos]));
+      escribir_(HOJA.DIS, ['Sesion', 'Valuador', 'Orden', 'NombreProducto', 'Rep', 'CodigoProducto'],
+        (req.diseno || []).map(d => [d.Sesion, d.Valuador, d.Orden, d.NombreProducto, d.Rep, d.CodigoProducto]));
       borrarMemoria_();
       return { ok: true };
     } finally {
@@ -130,9 +135,8 @@ const ACCIONES = {
   adminEstado: function (req) {
     verificarAdmin_(req);
     const diseno = leer_(HOJA.DIS).map(r => ({
-      Sesion: String(r.Sesion), Grupo: String(r.Grupo), Rep: Number(r.Rep), Valuador: String(r.Valuador),
-      Orden: Number(r.Orden), Muestra: String(r.Muestra), NombreProducto: String(r.NombreProducto),
-      CodigoProducto: String(r.CodigoProducto),
+      Sesion: String(r.Sesion), Valuador: String(r.Valuador), Orden: Number(r.Orden),
+      NombreProducto: String(r.NombreProducto), Rep: Number(r.Rep), CodigoProducto: String(r.CodigoProducto),
     }));
     const respondidas = {};
     leer_(HOJA.RES).forEach(r => {
@@ -147,7 +151,7 @@ const ACCIONES = {
       estudio: valorConfig_('Estudio') || '',
       atributos: leerAtributos_(),
       sesiones: leer_(HOJA.SES).map(s => ({
-        Sesion: String(s.Sesion), Grupo: String(s.Grupo), Rep: Number(s.Rep), NMuestras: Number(s.NMuestras), Vinos: String(s.Vinos),
+        Sesion: String(s.Sesion), NMuestras: Number(s.NMuestras), Vinos: String(s.Vinos),
       })),
       diseno: diseno,
       conteo: conteo,
@@ -165,17 +169,15 @@ const MEMORIA_SEG = 600;
 function base_() {
   const enMemoria = memoriaLeer_('base');
   if (enMemoria) return enMemoria;
+  // [Sesion, Valuador, Orden, NombreProducto, Rep, CodigoProducto]
   const diseno = leer_(HOJA.DIS).map(r => [
-    String(r.Sesion), String(r.Grupo), Number(r.Rep), String(r.Valuador), Number(r.Orden),
-    String(r.Muestra), String(r.NombreProducto), String(r.CodigoProducto),
+    String(r.Sesion), String(r.Valuador), Number(r.Orden), String(r.NombreProducto), Number(r.Rep), String(r.CodigoProducto),
   ]);
   const b = {
     estudio: valorConfig_('Estudio') || 'Análisis Sensorial',
     atributos: leerAtributos_(),
-    sesiones: leer_(HOJA.SES).map(s => ({
-      Sesion: String(s.Sesion), Grupo: String(s.Grupo), Rep: Number(s.Rep), NMuestras: Number(s.NMuestras),
-    })),
-    panelistas: unicos_(diseno.map(r => r[3])),
+    sesiones: leer_(HOJA.SES).map(s => ({ Sesion: String(s.Sesion), NMuestras: Number(s.NMuestras) })),
+    panelistas: unicos_(diseno.map(r => r[1])),
     diseno: diseno,
   };
   memoriaGuardar_('base', b);
