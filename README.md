@@ -44,6 +44,26 @@ Si ya hay respuestas y se guarda un diseño nuevo, la hoja **Respuestas** no se 
 | Respuestas | una fila por muestra evaluada + un atributo por columna |
 
 ## Archivos
-- `index.html` — la app (panelistas y administración)
+- `index.html` — la app ya compilada (**no editar a mano**: se genera desde `src/`)
+- `src/app.jsx` — código fuente de la app
+- `src/estilos.css`, `src/plantilla.html` — estilos y plantilla
+- `src/build.mjs` — genera `index.html`
 - `config.json` — URL del script de Google (se lee sin caché)
 - `Codigo.gs` — copia del script que está en la planilla (Extensiones → Apps Script)
+
+## Modificar la app
+La app se publica precompilada para que abra rápido (el navegador no tiene que traducir el código).
+Después de editar `src/app.jsx`:
+
+```bash
+npm i -D @babel/core @babel/preset-react @babel/preset-env tailwindcss@3 terser
+node src/build.mjs
+```
+y subir el `index.html` nuevo.
+
+## Velocidad
+- La planilla guarda el diseño 10 minutos en la memoria rápida de Google. Si editás a mano las hojas
+  Diseno, Sesiones o Atributos, ejecutá `refrescarMemoria` desde el editor de Apps Script (o esperá 10 min).
+- La primera llamada después de un rato sin uso tarda unos segundos más (Google “despierta” el script).
+- La app guarda en el dispositivo la última copia del diseño y la muestra al instante mientras se actualiza.
+- Los nombres de los vinos no se envían a los dispositivos de los panelistas (cata a ciegas): el servidor los completa al guardar cada respuesta.
