@@ -11,16 +11,23 @@ App web para análisis sensorial con varias sesiones por panelista (grupos de vi
 ### 1. Armar el estudio (administrador)
 1. Entrá a `#admin` con la clave.
 2. Pegá la lista de vinos (uno por línea, se puede copiar una columna de Excel).
-3. Elegí **vinos por sesión**, **repeticiones** y **número de panelistas**.
+3. Elegí **repeticiones**, **vinos por sesión** y **número de panelistas**.
 4. **Generar vista previa** → revisá las sesiones y los códigos → **Guardar y publicar**.
 
-Qué hace (equivale a `crear_grupos_aleatorios_df` + `generar_archivos_csv`):
-- Mezcla los vinos al azar y los reparte en grupos (f1, f2, …). Opcionalmente reparte parejo (17 vinos → 6+6+5).
-- Cada grupo se repite según las repeticiones: sesión = grupo × repetición (S1 = f1·R1, S2 = f2·R1, …).
-- En cada sesión, el orden de presentación sigue un **cuadrado de Williams** (balanceo de orden y arrastre), con un mapeo aleatorio de vinos por cada bloque de panelistas.
-- Cada vino recibe un **código de 3 dígitos** distinto en cada sesión, sin repetir en todo el estudio.
+Conceptos:
+- **Repetición** = cuántas veces pasa cada vino por el panel. 8 vinos × 3 repeticiones = 24 muestras.
+- **Sesión** = cada reunión con los panelistas. Las muestras se reparten de a “vinos por sesión”:
+  24 de a 6 → 4 sesiones; de a 8 → 3; de a 4 → 6; de a 7 → 7+7+7+3
+  (con “repartir parejo”: 6+6+6+6).
+- Un mismo vino **nunca se repite dentro de una sesión** (sus repeticiones caen en reuniones distintas),
+  por eso los vinos por sesión no pueden superar la cantidad de vinos distintos.
+- Dentro de cada sesión, el orden de presentación por panelista sigue un **cuadrado de Williams**
+  (balancea posición y vino anterior), con un mapeo aleatorio por cada bloque de panelistas.
+- Cada muestra (vino × repetición) recibe un **código de 3 dígitos** único en todo el estudio.
 - Con la misma **semilla** y los mismos datos se obtiene exactamente el mismo diseño.
-- Para balance completo, el número de panelistas debería ser múltiplo de n (vinos por sesión, si es par) o 2n (si es impar). La app avisa.
+- Para balance completo, el número de panelistas debería ser múltiplo de n (si la sesión tiene n vinos, n par)
+  o de 2n (n impar). La app avisa.
+- En **Respuestas** cada fila trae `NombreProducto` y `Rep` (la repetición de ese vino), listos para el análisis.
 
 Si ya hay respuestas y se guarda un diseño nuevo, la hoja **Respuestas** no se borra: se renombra como respaldo.
 
@@ -32,15 +39,15 @@ Si ya hay respuestas y se guarda un diseño nuevo, la hoja **Respuestas** no se 
 
 ### 3. Durante el panel (administrador)
 - **Progreso:** tabla panelista × sesión (✔ completa, n/N en curso).
-- **Planilla de servicio:** por sesión, la clave vino → código y la bandeja de cada panelista en orden. Botón **Imprimir**.
+- **Planilla de servicio:** por sesión, vino → repetición → código y la bandeja de cada panelista en orden. Botón **Imprimir**.
 
 ## Hojas de la planilla
 | Hoja | Contenido |
 |---|---|
 | Config | ClaveAdmin, Estudio |
 | Atributos | un atributo por fila |
-| Sesiones | Sesion, Grupo, Rep, NMuestras, Vinos |
-| Diseno | Sesion, Grupo, Rep, Valuador, Orden, Muestra, NombreProducto, CodigoProducto |
+| Sesiones | Sesion, NMuestras, Vinos |
+| Diseno | Sesion, Valuador, Orden, NombreProducto, Rep, CodigoProducto |
 | Respuestas | una fila por muestra evaluada + un atributo por columna |
 
 ## Archivos

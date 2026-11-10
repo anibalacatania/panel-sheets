@@ -61,8 +61,10 @@ async function vaciarCola() {
 }
 
 // =====================================================================
-// GENERADOR DE DISEÑO (equivalente a crear_grupos_aleatorios_df + generar_archivos_csv)
+// GENERADOR DE DISEÑO: repeticiones repartidas en sesiones + cuadrado de Williams por sesión
 // =====================================================================
+function ordenNatural(a, b) { return String(a).localeCompare(String(b), undefined, { numeric: true }); }
+
 function rng(seed) { // mulberry32: aleatorio reproducible con semilla
   let a = (seed >>> 0) || 1;
   return () => {
@@ -88,20 +90,32 @@ function williams(n) {
   return n % 2 ? filas.concat(filas.map(f => [...f].reverse())) : filas;
 }
 
+// Repetición = cuántas veces pasa cada vino por el panel (8 vinos × 3 rep = 24 muestras).
+// Sesión = cada reunión: las muestras se reparten de a "porSesion" (24 de a 6 = 4 sesiones;
+// de a 7 = 7+7+7+3). Un mismo vino nunca se repite dentro de una sesión.
+// Dentro de cada sesión el orden por panelista sigue un cuadrado de Williams.
+function tamaniosSesiones(total, porSesion, parejo) {
+  const n = Math.ceil(total / porSesion);
+  if (parejo) {
+    const base = Math.floor(total / n), extra = total % n;
+    return Array.from({ length: n }, (_, i) => base + (i < extra ? 1 : 0));
+  }
+  return Array.from({ length: n }, (_, i) => Math.min(porSesion, total - i * porSesion));
+}
+
 function generarDiseno({ vinos, porSesion, reps, nPanelistas, parejo, semilla }) {
   const r = rng(semilla);
-  const mezclados = barajar(vinos, r);
-  const nGrupos = Math.ceil(mezclados.length / porSesion);
-  // tamaños de grupo
-  let tam = [];
-  if (parejo) {
-    const base = Math.floor(mezclados.length / nGrupos), extra = mezclados.length % nGrupos;
-    tam = Array.from({ length: nGrupos }, (_, i) => base + (i < extra ? 1 : 0));
-  } else {
-    tam = Array.from({ length: nGrupos }, (_, i) => Math.min(porSesion, mezclados.length - i * porSesion));
-  }
-  const grupos = []; let p = 0;
-  tam.forEach(t => { grupos.push(mezclados.slice(p, p + t)); p += t; });
+  const tam = tamaniosSesiones(vinos.length * reps, porSesion, parejo);
+
+  // Repartir las copias: en cada sesión se eligen vinos distintos, priorizando los que
+  // tienen más repeticiones pendientes (así nunca queda un vino "atascado" al final).
+  const restan = {}; vinos.forEach(v => { restan[v] = reps; });
+  const usadas = {}; vinos.forEach(v => { usadas[v] = 0; });
+  const contenidos = tam.map(t => {
+    const orden = barajar(vinos, r).filter(v => restan[v] > 0).sort((a, b) => restan[b] - restan[a]);
+    const elegidos = orden.slice(0, t);
+    return barajar(elegidos, r).map(v => { restan[v]--; usadas[v]++; return { vino: v, rep: usadas[v] }; });
+  });
 
   // códigos de 3 dígitos únicos en todo el estudio
   const codigos = barajar(Array.from({ length: 900 }, (_, i) => String(100 + i)), r);
@@ -109,33 +123,29 @@ function generarDiseno({ vinos, porSesion, reps, nPanelistas, parejo, semilla })
 
   const panelistas = Array.from({ length: nPanelistas }, (_, i) => 'V' + (i + 1));
   const sesiones = [], diseno = [];
-  let ns = 0;
-  for (let rep = 1; rep <= reps; rep++) {
-    grupos.forEach((g, gi) => {
-      ns++;
-      const sesion = 'S' + ns;
-      const grupo = 'f' + (gi + 1);
-      const cod = {}; g.forEach(v => { cod[v] = codigos[ic++]; });
-      const W = williams(g.length);
-      const mapeos = {}; // un orden aleatorio de vinos por cada bloque de panelistas
-      panelistas.forEach((v, pi) => {
-        const bloque = Math.floor(pi / W.length), fila = pi % W.length;
-        if (!mapeos[bloque]) mapeos[bloque] = barajar(g, r);
-        W[fila].forEach((pos, k) => {
-          const vino = mapeos[bloque][pos];
-          diseno.push({
-            Sesion: sesion, Grupo: grupo, Rep: rep, Valuador: v, Orden: k + 1,
-            Muestra: String(g.indexOf(vino) + 1), NombreProducto: vino, CodigoProducto: cod[vino],
-          });
-        });
+  contenidos.forEach((muestras, si) => {
+    const sesion = 'S' + (si + 1);
+    muestras.forEach(m => { m.codigo = codigos[ic++]; });
+    const W = williams(muestras.length);
+    const mapeos = {}; // un orden aleatorio de muestras por cada bloque de panelistas
+    panelistas.forEach((v, pi) => {
+      const bloque = Math.floor(pi / W.length), fila = pi % W.length;
+      if (!mapeos[bloque]) mapeos[bloque] = barajar(muestras, r);
+      W[fila].forEach((pos, k) => {
+        const m = mapeos[bloque][pos];
+        diseno.push({ Sesion: sesion, Valuador: v, Orden: k + 1, NombreProducto: m.vino, Rep: m.rep, CodigoProducto: m.codigo });
       });
-      sesiones.push({ Sesion: sesion, Grupo: grupo, Rep: rep, NMuestras: g.length, Vinos: g.join(' | '), codigos: cod, filasWilliams: W.length });
     });
-  }
-  return { sesiones, diseno, grupos };
+    const ordenadas = [...muestras].sort((a, b) => ordenNatural(a.vino, b.vino));
+    sesiones.push({
+      Sesion: sesion, NMuestras: muestras.length,
+      Vinos: ordenadas.map(m => `${m.vino} (r${m.rep}, ${m.codigo})`).join(' | '),
+      muestras: ordenadas, filasWilliams: W.length,
+    });
+  });
+  return { sesiones, diseno, totalMuestras: vinos.length * reps };
 }
 
-const ordenNatural = (a, b) => String(a).localeCompare(String(b), undefined, { numeric: true });
 const ahora = () => {
   const d = new Date(), z = n => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`;
@@ -188,8 +198,8 @@ const EstadoNube = ({ pendientes, enviando, oscuro }) => (
 // =====================================================================
 // Convierte la respuesta compacta de 'inicio' en lo que usa la app
 function datosDe(base, v) {
-  const diseno = (base.diseno || []).filter(r => r[3] === v).map(r => ({
-    Sesion: r[0], Grupo: r[1], Rep: r[2], Valuador: r[3], Orden: r[4], Muestra: r[5], CodigoProducto: r[6],
+  const diseno = (base.diseno || []).filter(r => r[1] === v).map(r => ({
+    Sesion: r[0], Valuador: r[1], Orden: r[2], CodigoProducto: r[3],
   }));
   const progreso = {};
   Object.keys(base.progreso || {}).forEach(k => {
@@ -250,7 +260,7 @@ function PanelApp() {
     const por = {};
     datosPan.diseno.forEach(r => { (por[r.Sesion] = por[r.Sesion] || []).push(r); });
     return Object.keys(por).sort(ordenNatural).map(s => ({
-      Sesion: s, Grupo: por[s][0].Grupo, Rep: por[s][0].Rep,
+      Sesion: s,
       filas: por[s].sort((a, b) => a.Orden - b.Orden),
     }));
   }, [datosPan]);
@@ -270,8 +280,8 @@ function PanelApp() {
     const f = filas[idx];
     const fila = {
       id: `${valuador}|${sesion.Sesion}|${f.Orden}`,
-      Sesion: sesion.Sesion, Grupo: sesion.Grupo, Rep: sesion.Rep, Valuador: valuador, Orden: f.Orden,
-      Muestra: f.Muestra, NombreProducto: f.NombreProducto, CodigoProducto: f.CodigoProducto,
+      // el vino y su repetición los completa el servidor (la app no los conoce: cata a ciegas)
+      Sesion: sesion.Sesion, Valuador: valuador, Orden: f.Orden, CodigoProducto: f.CodigoProducto,
       timestamp: ahora(), ...valores,
     };
     encolar(fila); cola.refrescar(); cola.intentar();
@@ -355,7 +365,7 @@ function PanelApp() {
                       : 'bg-white border-purple-200 hover:border-purple-500 hover:shadow'}`}>
                     <div>
                       <p className={`font-bold text-lg ${completa ? '' : 'text-gray-800'}`}>Sesión {s.Sesion.replace(/^S/, '')}</p>
-                      <p className="text-sm">{n} muestras · repetición {s.Rep}</p>
+                      <p className="text-sm">{n} muestras</p>
                     </div>
                     <div className="text-right">
                       {completa ? <span className="flex items-center gap-1 font-semibold text-emerald-600"><span className="w-6 h-6 inline-block"><Check/></span> Completada</span>
@@ -542,16 +552,16 @@ const Campo = ({ label, children, ayuda }) => (
 const inp = 'mt-1 w-full border-2 border-gray-200 rounded-lg px-3 py-2 focus:border-purple-500 outline-none';
 
 function Generar({ clave, estado, alGuardar }) {
-  const F = LS.get('ps_form', {}); // el formulario se recuerda entre pestañas y visitas
+  const F = LS.get('ps_form2', {}); // el formulario se recuerda entre pestañas y visitas
   const [estudio, setEstudio] = useState(F.estudio ?? estado?.estudio ?? '');
   const [vinosTxt, setVinosTxt] = useState(F.vinosTxt ?? '');
   const [porSesion, setPorSesion] = useState(F.porSesion ?? 8);
   const [reps, setReps] = useState(F.reps ?? 3);
   const [nPan, setNPan] = useState(F.nPan ?? 16);
-  const [parejo, setParejo] = useState(F.parejo ?? true);
+  const [parejo, setParejo] = useState(F.parejo ?? false);
   const [semilla, setSemilla] = useState(() => F.semilla ?? (Math.floor(Math.random() * 99999) + 1));
   const [atrTxt, setAtrTxt] = useState(F.atrTxt ?? (estado?.atributos || []).join('\n'));
-  useEffect(() => { LS.set('ps_form', { estudio, vinosTxt, porSesion, reps, nPan, parejo, semilla, atrTxt }); },
+  useEffect(() => { LS.set('ps_form2', { estudio, vinosTxt, porSesion, reps, nPan, parejo, semilla, atrTxt }); },
     [estudio, vinosTxt, porSesion, reps, nPan, parejo, semilla, atrTxt]);
   const [prev, setPrev] = useState(null);
   const [msg, setMsg] = useState(null);
@@ -568,6 +578,7 @@ function Generar({ clave, estado, alGuardar }) {
     setMsg(null); setConfirmar(false);
     if (vinos.length < 1) return setMsg({ t: 'error', m: 'Pegá al menos un vino.' });
     if (dup.length) return setMsg({ t: 'error', m: 'Hay vinos repetidos: ' + [...new Set(dup)].join(', ') });
+    if (Number(porSesion) > vinos.length) return setMsg({ t: 'error', m: `No puede haber más vinos por sesión (${porSesion}) que vinos distintos (${vinos.length}): un vino no se repite dentro de una sesión.` });
     if (vinos.length * reps > 900) return setMsg({ t: 'error', m: 'Demasiadas muestras para códigos de 3 dígitos (máx. 900 vinos × repeticiones).' });
     setPrev(generarDiseno({ vinos, porSesion: Number(porSesion), reps: Number(reps), nPanelistas: Number(nPan), parejo, semilla: Number(semilla) }));
   };
@@ -578,7 +589,7 @@ function Generar({ clave, estado, alGuardar }) {
       await api('adminGuardarDiseno', {
         clave, forzar, estudio,
         atributos: lineas(atrTxt),
-        sesiones: prev.sesiones.map(({ codigos, filasWilliams, ...s }) => s),
+        sesiones: prev.sesiones.map(s => ({ Sesion: s.Sesion, NMuestras: s.NMuestras, Vinos: s.Vinos })),
         diseno: prev.diseno,
       });
       setConfirmar(false);
@@ -590,8 +601,7 @@ function Generar({ clave, estado, alGuardar }) {
     } finally { setOcupado(false); }
   };
 
-  const filasW = prev ? Math.max(...prev.sesiones.map(s => s.filasWilliams)) : 0;
-  const balanceado = prev ? prev.sesiones.every(s => Number(nPan) % s.filasWilliams === 0) : true;
+    const balanceado = prev ? prev.sesiones.every(s => Number(nPan) % s.filasWilliams === 0) : true;
 
   return (
     <div className="grid lg:grid-cols-5 gap-6">
@@ -603,13 +613,20 @@ function Generar({ clave, estado, alGuardar }) {
           <textarea className={inp + ' h-40 font-mono text-sm'} value={vinosTxt} onChange={e => setVinosTxt(e.target.value)} placeholder={'T1R1\nT1R2\nT2R1\n…'} />
         </Campo>
         <div className="grid grid-cols-3 gap-3">
-          <Campo label="Vinos por sesión"><input type="number" min="1" className={inp} value={porSesion} onChange={e => setPorSesion(e.target.value)} /></Campo>
           <Campo label="Repeticiones"><input type="number" min="1" className={inp} value={reps} onChange={e => setReps(e.target.value)} /></Campo>
+          <Campo label="Vinos por sesión"><input type="number" min="1" className={inp} value={porSesion} onChange={e => setPorSesion(e.target.value)} /></Campo>
           <Campo label="Panelistas"><input type="number" min="1" className={inp} value={nPan} onChange={e => setNPan(e.target.value)} /></Campo>
         </div>
+        {vinos.length > 0 && Number(reps) > 0 && Number(porSesion) > 0 && (
+          <p className="text-sm bg-purple-50 text-purple-900 rounded-lg p-3">
+            {vinos.length} vinos × {reps} repeticiones = <b>{vinos.length * reps} muestras</b> →{' '}
+            <b>{tamaniosSesiones(vinos.length * reps, Number(porSesion), parejo).length} sesiones</b>{' '}
+            ({tamaniosSesiones(vinos.length * reps, Number(porSesion), parejo).join(' + ')})
+          </p>
+        )}
         <label className="flex items-center gap-2 text-sm text-gray-700">
           <input type="checkbox" checked={parejo} onChange={e => setParejo(e.target.checked)} className="w-4 h-4" />
-          Repartir los vinos parejo entre sesiones (ej. 17 vinos → 6+6+5 en vez de 8+8+1)
+          Repartir parejo entre sesiones (ej. 24 muestras de a 7 → 6+6+6+6 en vez de 7+7+7+3)
         </label>
         <Campo label="Semilla" ayuda="Con la misma semilla y los mismos datos se obtiene exactamente el mismo diseño.">
           <input type="number" className={inp} value={semilla} onChange={e => setSemilla(e.target.value)} />
@@ -629,7 +646,7 @@ function Generar({ clave, estado, alGuardar }) {
           : <div>
               <h2 className="text-lg font-bold text-gray-800 mb-1">Vista previa: {prev.sesiones.length} sesiones</h2>
               <p className="text-sm text-gray-600 mb-3">
-                {prev.grupos.length} grupo(s) × {reps} repetición(es) · {nPan} panelistas · {prev.diseno.length} evaluaciones en total
+                {prev.totalMuestras} muestras ({vinos.length} vinos × {reps} rep.) · {nPan} panelistas · {prev.diseno.length} evaluaciones en total
               </p>
               {!balanceado && (
                 <p className="text-sm bg-amber-50 text-amber-800 p-3 rounded-lg mb-3">
@@ -640,12 +657,12 @@ function Generar({ clave, estado, alGuardar }) {
               <div className="overflow-auto max-h-[420px] border rounded-lg">
                 <table className="w-full text-sm">
                   <thead className="bg-gray-100 sticky top-0"><tr>
-                    <th className="p-2 text-left">Sesión</th><th className="p-2 text-left">Grupo</th><th className="p-2 text-left">Rep</th><th className="p-2 text-left">Vinos (código)</th>
+                    <th className="p-2 text-left">Sesión</th><th className="p-2 text-left">N</th><th className="p-2 text-left">Vinos (repetición, código)</th>
                   </tr></thead>
                   <tbody>{prev.sesiones.map(s => (
                     <tr key={s.Sesion} className="border-t align-top">
-                      <td className="p-2 font-bold">{s.Sesion}</td><td className="p-2">{s.Grupo}</td><td className="p-2">{s.Rep}</td>
-                      <td className="p-2">{s.Vinos.split(' | ').map(v => <span key={v} className="inline-block bg-gray-100 rounded px-2 py-0.5 mr-1 mb-1">{v} <b>({s.codigos[v]})</b></span>)}</td>
+                      <td className="p-2 font-bold">{s.Sesion}</td><td className="p-2">{s.NMuestras}</td>
+                      <td className="p-2">{s.muestras.map(m => <span key={m.vino} className="inline-block bg-gray-100 rounded px-2 py-0.5 mr-1 mb-1">{m.vino} <span className="text-gray-500">r{m.rep}</span> <b>{m.codigo}</b></span>)}</td>
                     </tr>))}
                   </tbody>
                 </table>
@@ -686,7 +703,7 @@ function Progreso({ estado, recargar }) {
         <table className="text-sm">
           <thead className="bg-gray-100 sticky top-0"><tr>
             <th className="p-2 text-left sticky left-0 bg-gray-100">Panelista</th>
-            {sesiones.map(s => <th key={s.Sesion} className="p-2 text-center whitespace-nowrap">{s.Sesion}<div className="text-xs font-normal text-gray-500">{s.Grupo}·R{s.Rep}</div></th>)}
+            {sesiones.map(s => <th key={s.Sesion} className="p-2 text-center whitespace-nowrap">{s.Sesion}<div className="text-xs font-normal text-gray-500">{s.NMuestras} muestras</div></th>)}
           </tr></thead>
           <tbody>{pans.map(v => (
             <tr key={v} className="border-t">
@@ -713,22 +730,22 @@ function Servicio({ estado }) {
   const filas = estado.diseno.filter(d => d.Sesion === sel);
   const pans = [...new Set(filas.map(d => d.Valuador))].sort(ordenNatural);
   const n = ses.NMuestras;
-  const clave = {}; filas.forEach(d => { clave[d.NombreProducto] = d.CodigoProducto; });
+  const clave = {}; filas.forEach(d => { clave[d.NombreProducto] = { codigo: d.CodigoProducto, rep: d.Rep }; });
   return (
     <div>
       <div className="flex flex-wrap gap-3 items-center mb-4 no-print">
         <label className="font-semibold text-gray-700">Sesión</label>
         <select value={sel} onChange={e => setS(e.target.value)} className="border-2 border-gray-200 rounded-lg px-3 py-2">
-          {estado.sesiones.map(x => <option key={x.Sesion} value={x.Sesion}>{x.Sesion} — {x.Grupo}, rep {x.Rep}</option>)}
+          {estado.sesiones.map(x => <option key={x.Sesion} value={x.Sesion}>{x.Sesion} — {x.NMuestras} muestras</option>)}
         </select>
         <button onClick={() => window.print()} className="bg-gray-800 text-white px-4 py-2 rounded-lg font-semibold">Imprimir</button>
       </div>
-      <h2 className="text-xl font-bold mb-1">{estado.estudio} — Sesión {sel} ({ses.Grupo}, repetición {ses.Rep})</h2>
+      <h2 className="text-xl font-bold mb-1">{estado.estudio} — Sesión {sel} ({ses.NMuestras} muestras)</h2>
       <h3 className="font-semibold mt-4 mb-2">Orden de servicio (vino → código)</h3>
       <table className="text-sm border mb-6">
-        <thead className="bg-gray-100"><tr><th className="p-2 border">Muestra</th><th className="p-2 border">Vino</th><th className="p-2 border">Código</th></tr></thead>
-        <tbody>{Object.keys(clave).sort((a, b) => filas.find(f => f.NombreProducto === a).Muestra - filas.find(f => f.NombreProducto === b).Muestra).map(v => (
-          <tr key={v}><td className="p-2 border text-center">{filas.find(f => f.NombreProducto === v).Muestra}</td><td className="p-2 border">{v}</td><td className="p-2 border text-center font-bold text-lg">{clave[v]}</td></tr>))}
+        <thead className="bg-gray-100"><tr><th className="p-2 border">Vino</th><th className="p-2 border">Repetición</th><th className="p-2 border">Código</th></tr></thead>
+        <tbody>{Object.keys(clave).sort(ordenNatural).map(v => (
+          <tr key={v}><td className="p-2 border">{v}</td><td className="p-2 border text-center">{clave[v].rep}</td><td className="p-2 border text-center font-bold text-lg">{clave[v].codigo}</td></tr>))}
         </tbody>
       </table>
       <h3 className="font-semibold mb-2">Bandeja por panelista (orden de presentación)</h3>
