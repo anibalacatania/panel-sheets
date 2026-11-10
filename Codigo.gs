@@ -85,16 +85,35 @@ const ACCIONES = {
       const o = { id: f.id, Sesion: f.Sesion, Valuador: f.Valuador, Orden: f.Orden,
         NombreProducto: d ? d[3] : (f.NombreProducto || ''), Rep: d ? d[4] : (f.Rep || ''),
         CodigoProducto: f.CodigoProducto, timestamp: f.timestamp };
-      Object.keys(f).forEach(k => { if (!(k in o)) o[k] = f[k]; }); // atributos
-      return o;
+      Object.keys(f).forEach(k => { if (!(k in o) && k !== 'corrige') o[k] = f[k]; }); // atributos
+      return { fila: o, corrige: !!f.corrige };
     });
-    const lock = LockService.getScriptLock();
-    lock.waitLock(25000);
-    try {
-      const hoja = hoja_(HOJA.RES);
-      completas.forEach(f => upsert_(hoja, f));
-    } finally {
-      lock.releaseLock();
+
+    // Camino rápido (sin hacer fila): una respuesta nueva se agrega al final con appendRow,
+    // que Google garantiza seguro aunque lleguen muchas a la vez.
+    // Camino con candado: correcciones (actualizar la fila existente) o columnas nuevas.
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let hoja = ss.getSheetByName(HOJA.RES);
+    const head = hoja ? encabezado_(hoja) : [];
+    const lentas = [];
+    completas.forEach(c => {
+      const cabe = head.length > 0 && Object.keys(c.fila).every(k => head.indexOf(k) !== -1);
+      if (!c.corrige && cabe) {
+        hoja.appendRow(head.map(h => (c.fila[h] === undefined ? '' : c.fila[h])));
+      } else {
+        lentas.push(c.fila);
+      }
+    });
+    if (lentas.length) {
+      const lock = LockService.getScriptLock();
+      lock.waitLock(25000);
+      try {
+        hoja = hoja_(HOJA.RES);
+        lentas.forEach(f => upsert_(hoja, f));
+        memoriaGuardarSimple_('res_head', JSON.stringify(encabezadoLeer_(hoja)));
+      } finally {
+        lock.releaseLock();
+      }
     }
     return { ok: true, guardadas: filas.length };
   },
@@ -125,6 +144,15 @@ const ACCIONES = {
         (req.sesiones || []).map(s => [s.Sesion, s.NMuestras, s.Vinos]));
       escribir_(HOJA.DIS, ['Sesion', 'Valuador', 'Orden', 'NombreProducto', 'Rep', 'CodigoProducto'],
         (req.diseno || []).map(d => [d.Sesion, d.Valuador, d.Orden, d.NombreProducto, d.Rep, d.CodigoProducto]));
+      // Respuestas con encabezado fijo desde el inicio: así los envíos van por el camino rápido
+      const resActual = ss.getSheetByName(HOJA.RES);
+      if (!resActual || resActual.getLastRow() === 0) {
+        const r = resActual || ss.insertSheet(HOJA.RES);
+        const cols = ['id', 'Sesion', 'Valuador', 'Orden', 'NombreProducto', 'Rep', 'CodigoProducto', 'timestamp']
+          .concat((req.atributos || []).map(a => String(a).replace(/\s+/g, ' ').trim()).filter(Boolean));
+        r.getRange(1, 1, 1, cols.length).setValues([cols]);
+        r.setFrozenRows(1);
+      }
       borrarMemoria_();
       return { ok: true };
     } finally {
@@ -215,7 +243,25 @@ function memoriaGuardar_(clave, obj) {
 function refrescarMemoria() { borrarMemoria_(); }
 
 function borrarMemoria_() {
-  try { CacheService.getScriptCache().remove('base:n'); } catch (e) {}
+  try { CacheService.getScriptCache().removeAll(['base:n', 'res_head']); } catch (e) {}
+}
+
+// encabezado de Respuestas (en memoria rápida para no leerlo en cada envío)
+function encabezado_(hoja) {
+  try {
+    const c = CacheService.getScriptCache().get('res_head');
+    if (c) return JSON.parse(c);
+  } catch (e) {}
+  const h = encabezadoLeer_(hoja);
+  memoriaGuardarSimple_('res_head', JSON.stringify(h));
+  return h;
+}
+function encabezadoLeer_(hoja) {
+  if (hoja.getLastColumn() === 0) return [];
+  return hoja.getRange(1, 1, 1, hoja.getLastColumn()).getValues()[0].map(String);
+}
+function memoriaGuardarSimple_(clave, txt) {
+  try { CacheService.getScriptCache().put(clave, txt, MEMORIA_SEG); } catch (e) {}
 }
 
 // órdenes respondidas: { "V1|S1": [1,2,3], ... }  (lee solo 3 columnas)
