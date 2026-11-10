@@ -42,36 +42,47 @@ function doGet() {
 
 const ACCIONES = {
   // ---- públicas (panelistas)
-  config: function () {
-    const sesiones = leer_(HOJA.SES);
-    const diseno = leer_(HOJA.DIS);
-    const panelistas = unicos_(diseno.map(r => String(r.Valuador)));
+  // Una sola llamada con todo lo que necesita la app. Sin nombres de vinos (cata a ciegas).
+  inicio: function () {
+    const b = base_();
     return {
       ok: true,
-      estudio: valorConfig_('Estudio') || 'Análisis Sensorial',
-      atributos: leerAtributos_(),
-      sesiones: sesiones.map(s => ({
-        Sesion: String(s.Sesion), Grupo: String(s.Grupo), Rep: Number(s.Rep), NMuestras: Number(s.NMuestras),
-      })),
-      panelistas: panelistas,
+      estudio: b.estudio,
+      atributos: b.atributos,
+      sesiones: b.sesiones,
+      panelistas: b.panelistas,
+      // [Sesion, Grupo, Rep, Valuador, Orden, Muestra, CodigoProducto]
+      diseno: b.diseno.map(r => [r[0], r[1], r[2], r[3], r[4], r[5], r[7]]),
+      progreso: respondidas_(),
     };
+  },
+
+  // (compatibilidad con versiones anteriores de la app)
+  config: function () {
+    const b = base_();
+    return { ok: true, estudio: b.estudio, atributos: b.atributos, sesiones: b.sesiones, panelistas: b.panelistas };
   },
 
   panelista: function (req) {
     const v = String(req.valuador || '').trim();
-    const diseno = leer_(HOJA.DIS)
-      .filter(r => String(r.Valuador) === v)
-      .map(r => ({
-        Sesion: String(r.Sesion), Grupo: String(r.Grupo), Rep: Number(r.Rep), Valuador: String(r.Valuador),
-        Orden: Number(r.Orden), Muestra: String(r.Muestra), NombreProducto: String(r.NombreProducto),
-        CodigoProducto: String(r.CodigoProducto),
-      }));
-    return { ok: true, diseno: diseno, progreso: progreso_(v) };
+    const diseno = base_().diseno.filter(r => r[3] === v).map(r => ({
+      Sesion: r[0], Grupo: r[1], Rep: r[2], Valuador: r[3], Orden: r[4], Muestra: r[5], CodigoProducto: r[7],
+    }));
+    const prog = respondidas_(), out = {};
+    Object.keys(prog).forEach(k => { const p = k.split('|'); if (p[0] === v) out[p[1]] = prog[k]; });
+    return { ok: true, diseno: diseno, progreso: out };
   },
 
   guardar: function (req) {
     const filas = Array.isArray(req.filas) ? req.filas : (req.fila ? [req.fila] : []);
     if (!filas.length) return { ok: true, guardadas: 0 };
+    // el nombre del vino lo completa el servidor desde el diseño (la app no lo conoce)
+    const nombres = {};
+    base_().diseno.forEach(r => { nombres[r[3] + '|' + r[0] + '|' + r[4]] = r[6]; });
+    filas.forEach(f => {
+      const n = nombres[f.Valuador + '|' + f.Sesion + '|' + Number(f.Orden)];
+      if (n && !f.NombreProducto) f.NombreProducto = n;
+    });
     const lock = LockService.getScriptLock();
     lock.waitLock(25000);
     try {
@@ -109,6 +120,7 @@ const ACCIONES = {
         (req.sesiones || []).map(s => [s.Sesion, s.Grupo, s.Rep, s.NMuestras, s.Vinos]));
       escribir_(HOJA.DIS, ['Sesion', 'Grupo', 'Rep', 'Valuador', 'Orden', 'Muestra', 'NombreProducto', 'CodigoProducto'],
         (req.diseno || []).map(d => [d.Sesion, d.Grupo, d.Rep, d.Valuador, d.Orden, d.Muestra, d.NombreProducto, d.CodigoProducto]));
+      borrarMemoria_();
       return { ok: true };
     } finally {
       lock.releaseLock();
@@ -143,19 +155,88 @@ const ACCIONES = {
   },
 };
 
-// ---------------------------------------------------------------- helpers
-function progreso_(valuador) {
-  const out = {};
-  leer_(HOJA.RES).forEach(r => {
-    if (String(r.Valuador) !== valuador) return;
-    const s = String(r.Sesion);
-    out[s] = out[s] || [];
-    const o = Number(r.Orden);
-    if (out[s].indexOf(o) === -1) out[s].push(o);
-  });
-  return out; // { S1: [1,2,3], ... } órdenes respondidas por sesión
+// ---------------------------------------------------------------- memoria rápida
+// El diseño, las sesiones y los atributos se guardan 10 minutos en la caché de Google,
+// así no hay que leer la planilla en cada llamada. Se borra al guardar un diseño nuevo.
+// Si editás a mano las hojas Diseno/Sesiones/Atributos, el cambio aparece en hasta 10 min
+// (o ejecutá refrescarMemoria desde el editor para que sea inmediato).
+const MEMORIA_SEG = 600;
+
+function base_() {
+  const enMemoria = memoriaLeer_('base');
+  if (enMemoria) return enMemoria;
+  const diseno = leer_(HOJA.DIS).map(r => [
+    String(r.Sesion), String(r.Grupo), Number(r.Rep), String(r.Valuador), Number(r.Orden),
+    String(r.Muestra), String(r.NombreProducto), String(r.CodigoProducto),
+  ]);
+  const b = {
+    estudio: valorConfig_('Estudio') || 'Análisis Sensorial',
+    atributos: leerAtributos_(),
+    sesiones: leer_(HOJA.SES).map(s => ({
+      Sesion: String(s.Sesion), Grupo: String(s.Grupo), Rep: Number(s.Rep), NMuestras: Number(s.NMuestras),
+    })),
+    panelistas: unicos_(diseno.map(r => r[3])),
+    diseno: diseno,
+  };
+  memoriaGuardar_('base', b);
+  return b;
 }
 
+function memoriaLeer_(clave) {
+  try {
+    const c = CacheService.getScriptCache();
+    const n = Number(c.get(clave + ':n') || 0);
+    if (!n) return null;
+    const claves = [];
+    for (let i = 0; i < n; i++) claves.push(clave + ':' + i);
+    const partes = c.getAll(claves);
+    let txt = '';
+    for (let i = 0; i < claves.length; i++) {
+      if (partes[claves[i]] == null) return null;
+      txt += partes[claves[i]];
+    }
+    return JSON.parse(txt);
+  } catch (e) { return null; }
+}
+
+function memoriaGuardar_(clave, obj) {
+  try {
+    const txt = JSON.stringify(obj), T = 30000; // trozos chicos: límite de 100 KB por valor
+    const n = Math.max(1, Math.ceil(txt.length / T)), m = {};
+    for (let i = 0; i < n; i++) m[clave + ':' + i] = txt.slice(i * T, (i + 1) * T);
+    m[clave + ':n'] = String(n);
+    CacheService.getScriptCache().putAll(m, MEMORIA_SEG);
+  } catch (e) { /* si no entra en la caché, se lee de la planilla */ }
+}
+
+// Para usar desde el editor (menú Ejecutar) después de editar hojas a mano
+function refrescarMemoria() { borrarMemoria_(); }
+
+function borrarMemoria_() {
+  try { CacheService.getScriptCache().remove('base:n'); } catch (e) {}
+}
+
+// órdenes respondidas: { "V1|S1": [1,2,3], ... }  (lee solo 3 columnas)
+function respondidas_() {
+  const h = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(HOJA.RES);
+  if (!h || h.getLastRow() < 2) return {};
+  const head = h.getRange(1, 1, 1, h.getLastColumn()).getValues()[0].map(String);
+  const iV = head.indexOf('Valuador'), iS = head.indexOf('Sesion'), iO = head.indexOf('Orden');
+  if (iV < 0 || iS < 0 || iO < 0) return {};
+  const n = h.getLastRow() - 1;
+  const col = i => h.getRange(2, i + 1, n, 1).getValues();
+  const V = col(iV), S = col(iS), O = col(iO), out = {};
+  for (let i = 0; i < n; i++) {
+    if (V[i][0] === '') continue;
+    const k = String(V[i][0]) + '|' + String(S[i][0]);
+    const o = Number(O[i][0]);
+    (out[k] = out[k] || []);
+    if (out[k].indexOf(o) === -1) out[k].push(o);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- helpers
 function verificarAdmin_(req) {
   const clave = valorConfig_('ClaveAdmin');
   if (!clave || String(req.clave || '') !== String(clave)) throw new Error('Clave de administrador incorrecta');
