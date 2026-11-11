@@ -2,8 +2,8 @@
 
 App web para análisis sensorial con varias sesiones por panelista (grupos de vinos y repeticiones).
 
-- **App de panelistas:** https://anibalacatania.github.io/panel/
-- **Administración:** https://anibalacatania.github.io/panel/#admin
+- **App de panelistas:** https://anibalacatania.github.io/panel-sheets/
+- **Administración:** https://anibalacatania.github.io/panel-sheets/#admin
 - **Datos:** planilla de Google “Panel Sensorial Sesiones - Datos” (la clave de administrador está en la hoja **Config**)
 
 ## Cómo se usa
